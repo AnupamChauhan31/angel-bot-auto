@@ -1,121 +1,68 @@
 
-import os
-from datetime import datetime
+import os, requests, datetime
+from datetime import datetime as dt
 from SmartApi import SmartConnect
-
-# === CONFIG ===
-MIN_BALANCE = 2000
-VIX_LIMIT = 16
-
-def get_market_direction(obj):
-    """Direction Confirm Logic"""
-    try:
-        # 1. Nifty LTP lo - Angel API se
-        # Nifty 50 token = 99926000
-        nifty_ltp_data = obj.ltpData("NSE", "NIFTY", "99926000")
-        ltp = nifty_ltp_data['data']['ltp']
-        
-        # 2. Day open vs abhi ka compare (Simple logic)
-        # Agar LTP > Day Open + 30 points = Uptrend = CE
-        # Agar LTP < Day Open - 30 points = Downtrend = PE
-        
-        # Day open lene ke liye candle data
-        import datetime as dt
-        today = dt.date.today()
-        from_time = f"{today} 09:15"
-        to_time = f"{today} 09:45"
-        
-        # History se open nikalo
-        try:
-            historicParam = {
-                "exchange": "NSE",
-                "symboltoken": "99926000",
-                "interval": "FIVE_MINUTE",
-                "fromdate": from_time,
-                "todate": to_time
-            }
-            candles = obj.getCandleData(historicParam)
-            day_open = candles['data'][0][1] # open price
-        except:
-            day_open = ltp # fallback
-            
-        diff = ltp - day_open
-        print(f"Nifty LTP: {ltp} | Day Open: {day_open} | Diff: {diff:.2f}")
-
-        # 3. Direction Decision
-        if diff > 30:
-            return "CE", f"Uptrend Confirm +{diff:.2f} -> CALL"
-        elif diff < -30:
-            return "PE", f"Downtrend Confirm {diff:.2f} -> PUT"
-        else:
-            return "NONE", f"Sideways {diff:.2f} - No Clear Direction - SKIP"
-
-    except Exception as e:
-        print(f"Direction Error: {e}")
-        return "NONE", "Direction fetch fail - No Trade"
-
-# === MAIN BOT ===
-print("=== ANGEL BOT START ===")
-now = datetime.now()
-print(f"Time: {now}")
-
-# Sunday check
-if now.weekday() == 6:
-    print("Market Closed - Sunday hai. Bot exit. No trade today.")
-    exit()
-if now.weekday() == 5:
-    print("Market Closed - Saturday hai. Bot exit.")
-    exit()
-
-# Login
-api_key = os.getenv("ANGEL_API_KEY")
-client_id = os.getenv("ANGEL_CLIENT_ID")
-password = os.getenv("ANGEL_PASSWORD")
-totp_secret = os.getenv("ANGEL_TOTP_SECRET")
-
-obj = SmartConnect(api_key=api_key)
 import pyotp
-totp = pyotp.TOTP(totp_secret).now()
-data = obj.generateSession(client_id, password, totp)
-
-if not data['status']:
-    print(f"Login Fail: {data}")
-    exit()
-
-print("Login Success!")
-
-# Balance check
-try:
-    rms = obj.rmsLimit()
-    print(f"RMS Response: {rms}")
-    balance = float(rms['data']['availablecash'] if 'availablecash' in str(rms) else rms['data']['net'] if 'net' in str(rms['data']) else 0)
-    # Safe parse
-    if balance == 0:
-        # Try alternate field
-        balance = float(rms['data'].get('availablecash', 10000))
-    print(f"Balance: {balance}")
-    if balance < MIN_BALANCE:
-        print(f"Balance low {balance} < {MIN_BALANCE}. No trade.")
-        exit()
-except Exception as e:
-    print(f"Balance check error: {e} - Continuing with safe mode")
-    balance = 10000
-
-print(f"Safety OK - Balance {balance}")
-
-# DIRECTION CHECK - NEW
-print("--- Direction Check Start ---")
-side, msg = get_market_direction(obj)
-print(msg)
-
-if side == "CE":
-    print("FINAL DECISION: BUY CALL (CE)")
-    # Yahan aapka placeOrder ayega
-elif side == "PE":
-    print("FINAL DECISION: BUY PUT (PE)")
-    # Yahan aapka placeOrder ayega
-else:
-    print("FINAL DECISION: NO TRADE TODAY - Direction clear nahi hai")
-    exit()
-
-print("Bot Ready - Place Order Logic Yahan Add Karo")
+MIN_BALANCE=2000
+def get_fii():
+ ce=0;pe=0;msg=""
+ try:
+  h={"User-Agent":"Mozilla/5.0"}
+  s=requests.Session()
+  s.get("https://www.nseindia.com",headers=h,timeout=10)
+  r=s.get("https://www.nseindia.com/api/fiidiiTradeReco",headers=h,timeout=10).json()
+  net=float(r['data'][0]['buyValue'])-float(r['data'][0]['sellValue'])
+  msg+=f"FII{net:.0f} "
+  if net>1000: ce+=20
+  elif net<-1000: pe+=20
+ except: msg+=f"FIIFail "
+ return ce,pe,msg
+def get_oi():
+ ce=0;pe=0;msg=""
+ try:
+  h={"User-Agent":"Mozilla/5.0"}
+  s=requests.Session()
+  s.get("https://www.nseindia.com",headers=h,timeout=10)
+  r=s.get("https://www.nseindia.com/api/option-chain-indices?symbol=NIFTY",headers=h,timeout=10).json()
+  ce_oi=0;pe_oi=0
+  for d in r['records']['data'][:20]:
+   if 'CE' in d: ce_oi+=d['CE']['openInterest']
+   if 'PE' in d: pe_oi+=d['PE']['openInterest']
+  pcr=pe_oi/ce_oi if ce_oi>0 else 1
+  msg+=f"PCR{pcr:.2f} "
+  if pcr>1.25: ce+=20
+  elif pcr<0.85: pe+=20
+ except: msg+=f"OIFail "
+ return ce,pe,msg
+def get_dir(obj):
+ ce=0;pe=0;msg=""
+ try:
+  n=obj.ltpData("NSE","NIFTY","99926000")
+  ltp=n['data']['ltp']
+  today=datetime.date.today().strftime("%Y-%m-%d")
+  p={"exchange":"NSE","symboltoken":"99926000","interval":"FIVE_MINUTE","fromdate":f"{today} 09:15","todate":f"{today} 09:45"}
+  c=obj.getCandleData(p)
+  o=c['data'][0][1]
+  diff=ltp-o
+  msg+=f"Diff{diff:.1f} "
+  if diff>30: ce+=40
+  elif diff<-30: pe+=40
+ except: msg+=f"DirFail "
+ return ce,pe,msg
+print("===80PCT BOT START===")
+now=dt.now()
+if now.weekday()>=5: print("Weekend");exit()
+obj=SmartConnect(api_key=os.getenv("ANGEL_API_KEY"))
+data=obj.generateSession(os.getenv("ANGEL_CLIENT_ID"),os.getenv("ANGEL_PASSWORD"),pyotp.TOTP(os.getenv("ANGEL_TOTP_SECRET")).now())
+if not data['status']: print(f"LoginFail{data}");exit()
+print("LoginOK")
+ce1,pe1,m1=get_fii()
+ce2,pe2,m2=get_oi()
+ce3,pe3,m3=get_dir(obj)
+tc=ce1+ce2+ce3
+tp=pe1+pe2+pe3
+print(f"{m1}|{m2}|{m3}")
+print(f"CE{tc}% PE{tp}%")
+if tc>=80: print(f"FINAL BUY CALL {tc}%")
+elif tp>=80: print(f"FINAL BUY PUT {tp}%")
+else: print(f"FINAL NO TRADE CE{tc} PE{tp}")
