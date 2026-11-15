@@ -24,4 +24,4 @@ jobs:
           ANGEL_PASSWORD: ${{ secrets.ANGEL_PASSWORD }}
           ANGEL_TOTP_SECRET: ${{ secrets.ANGEL_TOTP_SECRET }}
         run: |
-          python bot.py
+          python angel_final_bot.py
