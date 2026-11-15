@@ -1,23 +1,27 @@
 name: Run Angel Bot
+
 on:
-  schedule:
-    - cron: '15 4 * * 1-5'
   workflow_dispatch:
+  schedule:
+    - cron: '30 3 * * 1-5'
+
 jobs:
   run-bot:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.9'
+          python-version: '3.11'
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: |
+          pip install -r requirements.txt
       - name: Run bot
         env:
           ANGEL_API_KEY: ${{ secrets.ANGEL_API_KEY }}
           ANGEL_CLIENT_ID: ${{ secrets.ANGEL_CLIENT_ID }}
           ANGEL_PASSWORD: ${{ secrets.ANGEL_PASSWORD }}
           ANGEL_TOTP_SECRET: ${{ secrets.ANGEL_TOTP_SECRET }}
-        run: python angel_final_bot.py
+        run: |
+          python bot.py
