@@ -1,3 +1,4 @@
 smartapi-python
 pyotp
 pya3
+logzero
