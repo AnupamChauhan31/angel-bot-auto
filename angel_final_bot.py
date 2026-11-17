@@ -5,7 +5,7 @@ from SmartApi import SmartConnect
 import pyotp
 
 MIN_BALANCE = 2000
-LOTS = 2
+LOTS = 1
 QTY_PER_LOT = 65
 
 def get_balance(obj):
