@@ -1,4 +1,3 @@
-
 import os, requests, datetime, time
 from datetime import datetime as dt
 from SmartApi import SmartConnect
@@ -36,7 +35,7 @@ def get_fii():
     return ce,pe,msg
 
 def get_oi_pcr():
-    ce=0;pe=0;msg=""; max_vol=0; max_strike=0; max_type="CE"
+    ce=0;pe=0;msg=""; max_vol=0; max_strike=25500; max_type="CE"
     try:
         h={"User-Agent":"Mozilla/5.0"}
         s=requests.Session()
@@ -62,7 +61,7 @@ def get_oi_pcr():
         elif pcr<0.95: ce+=20
         else: ce+=10; pe+=10
     except Exception as e:
-        print(f"OI Fail {e}"); ce=10; pe=10; msg+=f"OIFail "; max_strike=25500; max_vol=100000
+        print(f"OI Fail {e}"); ce=10; pe=10; msg+=f"OIFail "
     return ce,pe,msg,max_strike,max_vol,max_type
 
 def get_direction():
@@ -83,8 +82,8 @@ def get_direction():
 def main():
     print("=== ANGEL BOT AUTO START ===")
     try:
-        api_key = os.getenv("API_KEY"); client_id = os.getenv("CLIENT_ID")
-        pwd = os.getenv("PWD"); totp_secret = os.getenv("TOTP")
+        api_key = os.getenv("ANGEL_API_KEY"); client_id = os.getenv("ANGEL_CLIENT_ID")
+        pwd = os.getenv("ANGEL_PASSWORD"); totp_secret = os.getenv("ANGEL_TOTP_SECRET")
         totp = pyotp.TOTP(totp_secret).now()
         obj = SmartConnect(api_key=api_key)
         data = obj.generateSession(client_id, pwd, totp)
