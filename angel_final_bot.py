@@ -14,7 +14,7 @@ def get_balance(obj):
         avail = float(r['data']['availablecash'])
         print(f"BALANCE: {avail}")
         return avail
-    except as e:
+    except Exception as e:
         print(f"Balance Fail {e}")
         return 0
 
@@ -29,7 +29,7 @@ def get_fii():
         msg+=f"FII:{net:.0f} "
         if net>1000: ce+=20
         elif net<-1000: pe+=20
-    except:
+    except Exception as e:
         msg+="FIIFail "
     return ce,pe,msg
 
@@ -48,7 +48,7 @@ def get_oi_pcr():
         msg+=f"PCR:{pcr:.2f} "
         if pcr>1.25: ce+=20
         elif pcr<0.85: pe+=20
-    except:
+    except Exception as e:
         msg+="OIFail "
     return ce,pe,msg,r if 'r' in locals() else None
 
