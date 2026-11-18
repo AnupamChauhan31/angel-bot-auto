@@ -1,11 +1,13 @@
-
-from dhanhq import dhanhq
+   
+   from dhanhq import DhanContext, dhanhq
 import datetime
 
 # === CONFIG - Aapka wala ===
 CLIENT_ID = "1101462989"
 ACCESS_TOKEN = "YOUR_DHAN_TOKEN_HERE" # Apna token yahi lagao
-dhan = dhanhq(CLIENT_ID, ACCESS_TOKEN)
+dhan_context = DhanContext(CLIENT_ID, ACCESS_TOKEN)
+dhan = dhanhq(dhan_context)
+
 
 TARGET = 40
 STOPLOSS = 25
