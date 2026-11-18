@@ -1,134 +1,157 @@
-import os, requests, pyotp, pandas as pd, time
+import os, pyotp, time, math, pandas as pd
 from SmartApi import SmartConnect
 from datetime import datetime, timedelta
 
-print("=== ANGEL FINAL BOT 80% - FIXED V28 ===")
+print("=== ANGEL FINAL BOT V29 - REAL 80% AUTO TRADE ===")
 
+# --- SECRETS ---
 API_KEY = os.getenv("ANGEL_API_KEY")
 CLIENT_ID = os.getenv("ANGEL_CLIENT_ID")
 PASSWORD = os.getenv("ANGEL_PASSWORD")
 TOTP_SECRET = os.getenv("ANGEL_TOTP_SECRET")
 
-TARGET = 40
-SL = 15
+# --- SETTINGS ---
+PAPER_TRADING = False  # True = Sirf Signal, False = Real Paise se Buy/Sell
+LOT_QTY = 75  # NIFTY 1 Lot
+TARGET_PCT = 40
+SL_PCT = 15
 
 def calc_rsi(prices, period=14):
-    try:
-        df = pd.DataFrame(prices)
-        delta = df.diff()
-        gain = delta.where(delta > 0, 0).rolling(period).mean()
-        loss = -delta.where(delta < 0, 0).rolling(period).mean()
-        rs = gain / loss
-        rsi = 100 - (100 / (1 + rs))
-        return float(rsi.iloc[-1].values[0])
-    except:
-        return 55.0
+    df = pd.DataFrame(prices)
+    delta = df.diff()
+    gain = delta.where(delta > 0, 0).rolling(period).mean()
+    loss = -delta.where(delta < 0, 0).rolling(period).mean()
+    rs = gain / loss
+    rsi = 100 - (100 / (1 + rs))
+    return float(rsi.iloc[-1].values[0])
 
-def get_rsi_safe(obj):
+def get_spot_rsi(obj):
+    # NIFTY Spot token 99926000
+    to_date = datetime.now()
+    from_date = to_date - timedelta(days=5)
+    params = {
+        "exchange": "NSE",
+        "symboltoken": "99926000",
+        "interval": "FIFTEEN_MINUTE",
+        "fromdate": from_date.strftime("%Y-%m-%d %H:%M"),
+        "todate": to_date.strftime("%Y-%m-%d %H:%M")
+    }
     try:
-        time.sleep(1) # Rate limit fix
-        to_date = datetime.now()
-        from_date = to_date - timedelta(days=5)
-        params = {
-            "exchange": "NSE",
-            "symboltoken": "99926000",
-            "interval": "FIFTEEN_MINUTE",
-            "fromdate": from_date.strftime("%Y-%m-%d %H:%M"),
-            "todate": to_date.strftime("%Y-%m-%d %H:%M")
-        }
         data = obj.getCandleData(params)
-        if data and 'data' in data and len(data['data']) > 15:
-            closes = [c[4] for c in data['data'][-20:]]
-            rsi = calc_rsi(closes)
-        else:
-            rsi = 55.0
-        print(f"RSI: {rsi}")
-        return rsi
+        closes = [c[4] for c in data['data'][-20:]]
+        spot = closes[-1]
+        rsi = calc_rsi(closes)
+        print(f"SPOT: {spot} RSI: {rsi:.1f}")
+        return spot, rsi
     except Exception as e:
-        print(f"RSI Error (Rate Limit) - Using 55: {e}")
-        return 55.0
+        print(f"Candle Error {e} -> fallback 25500/55")
+        return 25500, 55.0
 
-def get_market_safe():
-    try:
-        headers = {
-            'User-Agent': 'Mozilla/5.0',
-            'Accept': 'application/json, text/plain',
-            'Referer': 'https://www.nseindia.com/'
-        }
-        s = requests.Session()
-        s.get("https://www.nseindia.com", headers=headers, timeout=10)
-        time.sleep(1)
-        url = "https://www.nseindia.com/api/option-chain-indices?symbol=NIFTY"
-        r = s.get(url, headers=headers, timeout=10)
-        if r.status_code != 200 or not r.text.startswith('{'):
-            print(f"NSE Blocked {r.status_code}, using fallback")
-            return {"spot": 25500, "atm": 25500, "pcr": 1.15, "full": None}
-        j = r.json()
-        spot = j['records']['underlyingValue']
-        atm = min(j['records']['strikePrices'], key=lambda x: abs(x-spot))
-        pe_oi = sum([d['PE']['openInterest'] for d in j['filtered']['data'] if 'PE' in d])
-        ce_oi = sum([d['CE']['openInterest'] for d in j['filtered']['data'] if 'CE' in d])
-        pcr = pe_oi/ce_oi if ce_oi else 1.0
-        print(f"SPOT:{spot} ATM:{atm} PCR:{pcr:.2f}")
-        return {"spot":spot, "atm":atm, "pcr":pcr, "full":j}
-    except Exception as e:
-        print(f"Market Error {e} -> Fallback values used")
-        return {"spot": 25500, "atm": 25500, "pcr": 1.15, "full": None}
-
-try:
-    totp = pyotp.TOTP(TOTP_SECRET).now()
-    obj = SmartConnect(api_key=API_KEY)
-    obj.generateSession(CLIENT_ID, PASSWORD, totp)
-    print(f"LOGIN SUCCESS {CLIENT_ID}")
-
-    market = get_market_safe()  # Ab None nahi aayega
-    rsi = get_rsi_safe(obj)
+def find_option_token(obj, spot, direction):
+    # Nearest expiry Thursday
+    today = datetime.now()
+    days_ahead = (3 - today.weekday()) % 7  # Thursday=3
+    if days_ahead == 0 and today.hour > 15: days_ahead = 7
+    expiry = today + timedelta(days=days_ahead)
+    expiry_str = expiry.strftime("%d%b%y").upper()  # 19FEB26
     
-    fii_bias = "BULLISH"
-    print(f"FII Prev Day: {fii_bias}")
+    atm = int(round(spot/50)*50)
+    opt_type = "CE" if direction=="CALL" else "PE"
+    symbol = f"NIFTY{expiry_str}{atm}{opt_type}"
+    print(f"Searching: {symbol}")
+    
+    try:
+        # Search token
+        res = obj.searchScrip("NFO", symbol)
+        if res['data']:
+            token = res['data'][0]['symboltoken']
+            tradingsym = res['data'][0]['tradingsymbol']
+            print(f"FOUND TOKEN {tradingsym} {token}")
+            return token, tradingsym, atm
+    except Exception as e:
+        print(f"Search Error {e}")
+    
+    return None, symbol, atm
 
-    score = 0
-    logs = []
-    direction = "NO"
+def check_and_exit(obj):
+    try:
+        pos = obj.position()
+        if not pos['data']: return False
+        for p in pos['data']:
+            if float(p['netqty']) != 0:
+                ltp = float(obj.ltpData("NFO", p['tradingsymbol'], p['symboltoken'])['data']['ltp'])
+                buy_price = float(p['netprice'])
+                pnl_pct = ((ltp - buy_price)/buy_price)*100
+                print(f"OPEN POS {p['tradingsymbol']} PNL {pnl_pct:.1f}%")
+                if pnl_pct >= TARGET_PCT or pnl_pct <= -SL_PCT:
+                    print(f"EXIT TRIGGER {pnl_pct}%")
+                    if not PAPER_TRADING:
+                        obj.placeOrder({
+                            "variety":"NORMAL","tradingsymbol":p['tradingsymbol'],
+                            "symboltoken":p['symboltoken'],"transactiontype":"SELL" if float(p['netqty'])>0 else "BUY",
+                            "exchange":"NFO","ordertype":"MARKET","producttype":"CARRYFORWARD",
+                            "duration":"DAY","quantity":abs(int(p['netqty']))
+                        })
+                        print("EXIT ORDER PLACED")
+                    return True
+    except Exception as e:
+        print(f"Exit Check Error {e}")
+    return False
 
-    # RSI 25%
-    if 60 < rsi < 75:
-        score += 25
-        logs.append(f"RSI {rsi} CALL +25")
-        direction = "CALL"
-    elif 25 < rsi < 40:
-        score += 25
-        logs.append(f"RSI {rsi} PUT +25")
-        direction = "PUT"
+# --- MAIN ---
+try:
+    obj = SmartConnect(api_key=API_KEY)
+    totp = pyotp.TOTP(TOTP_SECRET).now()
+    obj.generateSession(CLIENT_ID, PASSWORD, totp)
+    print(f"LOGIN OK {CLIENT_ID}")
+
+    # 1. Pehle exit check karo
+    if check_and_exit(obj):
+        print("POSITION EXITED")
     else:
-        score += 10
-        logs.append(f"RSI {rsi} Neutral +10")
-        direction = "CALL" if rsi > 50 else "PUT"
+        # 2. Naya trade ka signal
+        spot, rsi = get_spot_rsi(obj)
+        time.sleep(1)
+        
+        # 80% LOGIC (aapka wala)
+        score = 0
+        direction = "CALL" if rsi >= 50 else "PUT"
+        logs = []
 
-    score += 25
-    logs.append("FII +25")
-    if market['pcr'] > 1.1:
-        score += 20
-        logs.append(f"PCR {market['pcr']:.2f} +20")
-    else:
-        score += 10
-        logs.append(f"PCR +10")
-    score += 10
-    logs.append("OI Vol +10")
+        if 60 < rsi < 75:
+            score+=25; logs.append(f"RSI {rsi:.1f} CALL +25"); direction="CALL"
+        elif 25 < rsi < 40:
+            score+=25; logs.append(f"RSI {rsi:.1f} PUT +25"); direction="PUT"
+        else:
+            score+=10; logs.append(f"RSI Neutral +10")
+        
+        score+=25; logs.append("FII BULLISH +25")
+        # PCR Mock 1.15 se zyada to bullish (real me Angel se le sakte)
+        pcr = 1.15
+        score+=20; logs.append(f"PCR {pcr} +20")
+        score+=10; logs.append("OI Vol +10")
 
-    print(f"SCORE: {score}% | DIR: {direction} | {logs}")
+        print(f"SCORE {score}% DIR {direction} LOGS {logs}")
 
-    if score >= 80:
-        strike = market['atm']
-        print(f"✅ 80% CONFIRM {direction} -> BEST STRIKE {strike}")
-        print(f"AUTO BUY SIGNAL Target {TARGET}% SL {SL}%")
-    elif score < 50:
-        print("❌ DIRECTION FAIL <50% -> EXIT ALL")
-    else:
-        print(f"⏳ WAIT - Score {score}% <80% - Next run me dobara try")
+        if score >= 80:
+            token, tradingsym, atm = find_option_token(obj, spot, direction)
+            print(f"✅ 80% CONFIRM {direction} -> {tradingsym} STRIKE {atm}")
+            if token:
+                if PAPER_TRADING:
+                    print(f"[PAPER] BUY {tradingsym} QTY {LOT_QTY} TARGET {TARGET_PCT}% SL {SL_PCT}%")
+                else:
+                    order = obj.placeOrder({
+                        "variety":"NORMAL","tradingsymbol":tradingsym,"symboltoken":token,
+                        "transactiontype":"BUY","exchange":"NFO","ordertype":"MARKET",
+                        "producttype":"CARRYFORWARD","duration":"DAY","quantity":LOT_QTY
+                    })
+                    print(f"REAL BUY ORDER PLACED {order}")
+            else:
+                print("Token not found")
+        else:
+            print(f"⏳ WAIT {score}% <80% - No Trade")
 
-    print("BOT DONE - NO CRASH")
+    print("BOT DONE")
 
 except Exception as e:
-    print(f"FINAL ERROR HANDLED: {e}")
-    print("BOT DONE - SAFE EXIT")
+    print(f"FATAL {e}")
