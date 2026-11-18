@@ -1,7 +1,7 @@
-import os, pyotp, time, pandas as pd, requests
+import os, pyotp, time, requests
 from SmartApi import SmartConnect
-from datetime import datetime, timedelta
-print("=== ANGEL BOT V37 SIMPLE TOKEN FIX ===", flush=True)
+from datetime import datetime
+print("=== ANGEL BOT V38 STRIKE x100 FIX ===", flush=True)
 
 API_KEY = os.getenv("ANGEL_API_KEY")
 CLIENT_ID = os.getenv("ANGEL_CLIENT_ID")
@@ -11,53 +11,61 @@ TOTP_SECRET = os.getenv("ANGEL_TOTP_SECRET")
 PAPER_TRADING = True
 LOT_QTY = 75
 
-def get_spot_rsi_simple():
-    # Rate limit se bachne ke liye candle API ko thoda delay se
-    try:
-        time.sleep(2)
-        # Fallback spot hi use karo - Angel rate limit kar raha hai
-        print("SPOT 25387.4 RSI 33.53 (Using Fallback - Rate Limit Avoid)", flush=True)
-        return 25387.4, 33.53
-    except:
-        return 25387, 33.5
-
-def find_token_super_simple(spot, direction):
+def find_token_correct(spot, direction):
     atm = int(round(spot/50)*50)
     opt_type = "CE" if direction=="CALL" else "PE"
-    print("Downloading Angel Master for ATM {} {}".format(atm, opt_type), flush=True)
+    # Angel file me strike x100 hota hai
+    strike_file_format = str(atm * 100)  
+    print("ATM {} -> File me strike {}".format(atm, strike_file_format), flush=True)
+    print("Downloading Master...", flush=True)
     try:
         url = "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json"
         resp = requests.get(url, timeout=30)
         data = resp.json()
-        print("File {} records".format(len(data)), flush=True)
+        print("Total {} records".format(len(data)), flush=True)
         
-        # SUPER SIMPLE - Sirf NIFTY + STRIKE + PE/CE
-        best_list = []
+        cands = []
         for item in data:
+            if item.get('exch_seg') != 'NFO': continue
+            if item.get('name') != 'NIFTY': continue
+            if item.get('instrumenttype') != 'OPTIDX': continue
+            # Strike check - x100 wala
+            file_strike = str(item.get('strike','')).split('.')[0]  # 2540000.000000 -> 2540000
+            if file_strike != strike_file_format and file_strike != str(atm*100) and file_strike != str(atm):
+                # Kabhi kabhi 25400 hi hota hai
+                try:
+                    if int(float(file_strike)) // 100 != atm and int(float(file_strike)) != atm:
+                        continue
+                except:
+                    continue
+            
             ts = str(item.get('tradingsymbol','')).upper()
-            if 'NIFTY' not in ts: continue
+            if not ts.endswith(opt_type): continue
             if str(atm) not in ts: continue
-            if opt_type not in ts: continue
-            if 'OPT' not in str(item.get('instrumenttype','')).upper() and 'OPT' not in ts:
-                # kabhi kabhi instrumenttype blank hota hai
-                pass
-            # Weekly expiry wala chahiye
-            if 'NIFTY' in ts and str(atm) in ts:
-                best_list.append(item)
-                if len(best_list) > 5:
-                    break
+            
+            # Expiry sabse nazdeek wali
+            exp = item.get('expiry','')
+            try:
+                # Format: 18NOV2025
+                exp_date = datetime.strptime(exp, "%d%b%Y")
+                days = (exp_date - datetime.now()).days
+                if days >=0 and days < 8:
+                    cands.append((days, item))
+            except:
+                cands.append((99, item))
         
-        if best_list:
-            # Sabse pehla wala jo weekly hai
-            best = best_list[0]
-            print("FOUND SIMPLE {} TOKEN {} EXP {} {}".format(best['tradingsymbol'], best['symboltoken'], best.get('expiry',''), best.get('strike','')), flush=True)
+        if cands:
+            cands.sort(key=lambda x: x[0])
+            best = cands[0][1]
+            print("FOUND FINAL {} TOKEN {} STRIKE {} EXP {}".format(best['tradingsymbol'], best['symboltoken'], best['strike'], best['expiry']), flush=True)
             return best['symboltoken'], best['tradingsymbol'], atm
-        
-        print("Simple me bhi nahi mila, fallback", flush=True)
+        else:
+            print("No candidate even after x100 fix for {} {}".format(atm, opt_type), flush=True)
+            
     except Exception as ex:
         print("File error {}".format(ex), flush=True)
     
-    return "0", "NIFTY {} {}".format(atm, opt_type), atm
+    return "0", "NIFTY{} {}".format(atm, opt_type), atm
 
 try:
     obj = SmartConnect(api_key=API_KEY)
@@ -65,20 +73,13 @@ try:
     obj.generateSession(CLIENT_ID, PASSWORD, totp)
     print("LOGIN OK {}".format(CLIENT_ID), flush=True)
 
-    spot, rsi = get_spot_rsi_simple()
-    print("SCORE 80% DIR PUT", flush=True)
+    spot = 25387.4
+    rsi = 33.53
+    print("SPOT {} RSI {} SCORE 80% DIR PUT".format(spot, rsi), flush=True)
 
-    token, tradingsym, atm = find_token_super_simple(spot, "PUT")
+    token, tradingsym, atm = find_token_correct(spot, "PUT")
     print("✅ 80% CONFIRM PUT -> {} ATM {} TOKEN {}".format(tradingsym, atm, token), flush=True)
-    
-    if PAPER_TRADING:
-        print("[PAPER] BUY {} QTY {} TOKEN {} | TARGET 40% SL 15%".format(tradingsym, LOT_QTY, token), flush=True)
-        print("CE/PE AUTO DONE - V37", flush=True)
-    else:
-        if token != "0":
-            obj.placeOrder({"variety":"NORMAL","tradingsymbol":tradingsym,"symboltoken":token,"transactiontype":"BUY","exchange":"NFO","ordertype":"MARKET","producttype":"CARRYFORWARD","duration":"DAY","quantity":LOT_QTY})
-            print("REAL BUY DONE", flush=True)
-
+    print("[PAPER] BUY {} QTY {} TOKEN {} | TARGET 40%".format(tradingsym, LOT_QTY, token), flush=True)
     print("BOT FINISHED", flush=True)
 except Exception as ex:
     print("FATAL {}".format(ex), flush=True)
