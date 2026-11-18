@@ -1,7 +1,7 @@
 import os, pyotp, requests
 from SmartApi import SmartConnect
 from datetime import datetime
-print("=== ANGEL BOT V39 DEBUG TOKEN ===", flush=True)
+print("=== ANGEL BOT V40 SYMBOL FIELD FIX ===", flush=True)
 
 API_KEY = os.getenv("ANGEL_API_KEY")
 CLIENT_ID = os.getenv("ANGEL_CLIENT_ID")
@@ -10,7 +10,7 @@ TOTP_SECRET = os.getenv("ANGEL_TOTP_SECRET")
 
 LOT_QTY = 75
 
-def find_token_debug(spot, direction):
+def find_token_v40(spot, direction):
     atm = int(round(spot/50)*50)
     opt_type = "CE" if direction=="CALL" else "PE"
     print("Looking ATM {} {}".format(atm, opt_type), flush=True)
@@ -20,41 +20,27 @@ def find_token_debug(spot, direction):
     data = resp.json()
     print("Total {} records".format(len(data)), flush=True)
 
-    # DEBUG - Pehle 5 NIFTY OPT dikhao
-    print("--- SAMPLE NIFTY OPTIONS FROM FILE ---", flush=True)
-    cnt=0
+    print("--- SAMPLE FROM FILE (symbol field) ---", flush=True)
+    c=0
     for item in data:
-        ts = str(item.get('tradingsymbol',''))
-        if 'NIFTY' in ts and ts.endswith(opt_type):
-            print("SAMPLE: {} | strike={} | expiry={} | token={}".format(ts, item.get('strike'), item.get('expiry'), item.get('symboltoken')), flush=True)
-            cnt+=1
-            if cnt>=5:
+        sym = str(item.get('symbol',''))
+        if 'NIFTY' in sym and ('CE' in sym or 'PE' in sym) and '25400' in sym:
+            print("SAMPLE {} strike={} exp={} token={}".format(sym, item.get('strike'), item.get('expiry'), item.get('token')), flush=True)
+            c+=1
+            if c>=3:
                 break
 
-    # AB FINAL SEARCH - Sabse loose filter
-    found = None
+    # FINAL LOOSE SEARCH - symbol field use karo
     for item in data:
-        ts = str(item.get('tradingsymbol','')).upper()
-        # Loose: NIFTY ho, PE/CE se khatam ho, 25400 ho
-        if 'NIFTY' not in ts: continue
-        if not ts.endswith(opt_type): continue
-        if str(atm) not in ts: continue
+        sym = str(item.get('symbol','')).upper()
+        if 'NIFTY' not in sym: continue
+        if not sym.endswith(opt_type): continue
+        if str(atm) not in sym: continue
         # Mil gaya
-        found = item
-        break
-    
-    if found:
-        print("FOUND LOOSE {} TOKEN {} STRIKE {} EXP {}".format(found['tradingsymbol'], found['symboltoken'], found.get('strike'), found.get('expiry')), flush=True)
-        return found['symboltoken'], found['tradingsymbol'], atm
-    else:
-        print("LOOSE BHI FAIL - File me {} ka option hi nahi hai".format(atm), flush=True)
-        # Koi bhi NIFTY PE le lo nearest
-        for item in data:
-            ts = str(item.get('tradingsymbol',''))
-            if 'NIFTY' in ts and ts.endswith('PE'):
-                print("FALLBACK PE {} TOKEN {}".format(ts, item.get('symboltoken')), flush=True)
-                return item['symboltoken'], ts, atm
+        print("FOUND {} TOKEN {} EXP {} STRIKE {}".format(item.get('symbol'), item.get('token'), item.get('expiry'), item.get('strike')), flush=True)
+        return item.get('token'), item.get('symbol'), atm
 
+    print("NOT FOUND STILL", flush=True)
     return "0", "NIFTY{} {}".format(atm, opt_type), atm
 
 try:
@@ -64,9 +50,9 @@ try:
     print("LOGIN OK {}".format(CLIENT_ID), flush=True)
 
     spot = 25387.4
-    print("SPOT {} RSI 33.53 SCORE 80% DIR PUT ATM 25400".format(spot), flush=True)
+    print("SPOT {} RSI 33.53 SCORE 80% DIR PUT".format(spot), flush=True)
 
-    token, tradingsym, atm = find_token_debug(spot, "PUT")
+    token, tradingsym, atm = find_token_v40(spot, "PUT")
     print("✅ FINAL {} TOKEN {} ATM {}".format(tradingsym, token, atm), flush=True)
     print("[PAPER] BUY {} QTY {} TOKEN {}".format(tradingsym, LOT_QTY, token), flush=True)
     print("BOT FINISHED", flush=True)
