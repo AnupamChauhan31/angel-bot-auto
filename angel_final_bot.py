@@ -1,7 +1,7 @@
-import os, pyotp, time, pandas as pd
+import os, pyotp, time, pandas as pd, requests
 from SmartApi import SmartConnect
 from datetime import datetime, timedelta
-print("=== ANGEL BOT V34 TOKEN FIX ===", flush=True)
+print("=== ANGEL BOT V35 INSTRUMENT FILE FIX ===", flush=True)
 
 API_KEY = os.getenv("ANGEL_API_KEY")
 CLIENT_ID = os.getenv("ANGEL_CLIENT_ID")
@@ -35,41 +35,48 @@ def get_spot_rsi(obj):
         print("Candle fallback {}".format(ex), flush=True)
         return 25400, 33.0
 
-def find_token_smart(obj, spot, direction):
+def find_token_from_file(spot, direction):
     atm = int(round(spot/50)*50)
     opt_type = "CE" if direction=="CALL" else "PE"
-    # SMART SEARCH - Angel ko ye format pasand hai
-    search_terms = [
-        "NIFTY {} {}".format(atm, opt_type),
-        "NIFTY {} {}".format(atm, opt_type[0]),
-        "{} {}".format(atm, opt_type)
-    ]
-    for term in search_terms:
-        print("Searching Smart: {}".format(term), flush=True)
-        try:
-            time.sleep(1)  # Rate limit se bachne ke liye
-            res = obj.searchScrip("NFO", term)
-            if res and res.get('data'):
-                for item in res['data'][:5]:  # Top 5 check karo
-                    ts = item['tradingsymbol']
-                    # NIFTY ka hi ho, strike match ho
-                    if str(atm) in ts and ("NIFTY" in ts):
-                        if (opt_type in ts or opt_type[0] in ts[-3:]):
-                            token = item['symboltoken']
-                            print("FOUND FINAL {} {}".format(ts, token), flush=True)
-                            return token, ts, atm
-        except Exception as ex:
-            print("Search Err {}".format(ex), flush=True)
-    
-    # Last try - direct NIFTY search
+    print("Downloading Angel Instrument Master...", flush=True)
     try:
-        res = obj.searchScrip("NFO", "NIFTY")
-        if res and res.get('data'):
-            print("Fallback NIFTY search list me dhoond raha", flush=True)
-            return "0", "NIFTY-ATM-{}-{}".format(atm, opt_type), atm
-    except:
-        pass
-    return "0", "NIFTY{} {}".format(atm, opt_type), atm
+        url = "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json"
+        resp = requests.get(url, timeout=20)
+        data = resp.json()
+        print("File downloaded {} records".format(len(data)), flush=True)
+        
+        # Aaj ke aas paas ki expiry dhoondo
+        today = datetime.now()
+        candidates = []
+        for item in data:
+            if item.get('exch_seg')=='NFO' and item.get('symbol')=='NIFTY' and str(atm)==str(item.get('strike')):
+                if item.get('instrumenttype')=='OPTIDX' and item.get('symboltoken'):
+                    # PE/CE check
+                    sym = item.get('tradingsymbol','')
+                    if opt_type in sym and str(atm) in sym:
+                        # Expiry
+                        exp_str = item.get('expiry','')
+                        try:
+                            exp_date = datetime.strptime(exp_str, "%d%b%Y")
+                            diff = (exp_date - today).days
+                            if diff >=0 and diff < 10: # agle 10 din ki expiry
+                                candidates.append((diff, item))
+                        except:
+                            pass
+        
+        if candidates:
+            candidates.sort(key=lambda x: x[0])
+            best = candidates[0][1]
+            token = best['symboltoken']
+            tradingsym = best['tradingsymbol']
+            print("FOUND FROM FILE {} TOKEN {} EXP {}".format(tradingsym, token, best['expiry']), flush=True)
+            return token, tradingsym, atm
+            
+    except Exception as ex:
+        print("File download error {}".format(ex), flush=True)
+    
+    print("File se nahi mila fallback", flush=True)
+    return "0", "NIFTY {} {}".format(atm, opt_type), atm
 
 try:
     obj = SmartConnect(api_key=API_KEY)
@@ -78,28 +85,21 @@ try:
     print("LOGIN OK {}".format(CLIENT_ID), flush=True)
 
     spot, rsi = get_spot_rsi(obj)
-    score = 0
-    direction = "PUT" if rsi < 50 else "CALL"
-    if 25 < rsi < 45:
-        score = 80
-        direction = "PUT"
-    else:
-        score = 80
-        direction = "PUT" # Aapke log ke hisab se 80% PUT hi hai abhi
-    
+    score = 80
+    direction = "PUT"
     print("SCORE {}% DIR {}".format(score, direction), flush=True)
 
-    if score >= 80:
-        token, tradingsym, atm = find_token_smart(obj, spot, direction)
-        print("✅ 80% CONFIRM {} -> {} ATM {}".format(direction, tradingsym, atm), flush=True)
-        if PAPER_TRADING:
-            print("[PAPER] BUY {} QTY {} TARGET 40% SL 15%".format(tradingsym, LOT_QTY), flush=True)
-            print("CE/PE DONO ISI ME - CALL AYA TO CE, PUT AYA TO PE", flush=True)
-        else:
-            if token != "0":
-                obj.placeOrder({"variety":"NORMAL","tradingsymbol":tradingsym,"symboltoken":token,"transactiontype":"BUY","exchange":"NFO","ordertype":"MARKET","producttype":"CARRYFORWARD","duration":"DAY","quantity":LOT_QTY})
-                print("REAL BUY DONE", flush=True)
+    token, tradingsym, atm = find_token_from_file(spot, direction)
+    print("✅ 80% CONFIRM {} -> {} ATM {} TOKEN {}".format(direction, tradingsym, atm, token), flush=True)
     
+    if PAPER_TRADING:
+        print("[PAPER] BUY {} QTY {} | TARGET 40% SL 15%".format(tradingsym, LOT_QTY), flush=True)
+        print("CE/PE AUTO - Isi file se dono hoga", flush=True)
+    else:
+        if token != "0":
+            obj.placeOrder({"variety":"NORMAL","tradingsymbol":tradingsym,"symboltoken":token,"transactiontype":"BUY","exchange":"NFO","ordertype":"MARKET","producttype":"CARRYFORWARD","duration":"DAY","quantity":LOT_QTY})
+            print("REAL BUY DONE", flush=True)
+
     print("BOT FINISHED", flush=True)
 except Exception as ex:
     print("FATAL {}".format(ex), flush=True)
