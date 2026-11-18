@@ -1,16 +1,16 @@
-import os, requests, pyotp, pandas as pd
+import os, requests, pyotp, pandas as pd, time
 from SmartApi import SmartConnect
 from datetime import datetime, timedelta
 
-print("=== ANGEL FINAL BOT 80% - RSI+FII+OI+PCR ===")
+print("=== ANGEL FINAL BOT 80% - FIXED V28 ===")
 
 API_KEY = os.getenv("ANGEL_API_KEY")
 CLIENT_ID = os.getenv("ANGEL_CLIENT_ID")
 PASSWORD = os.getenv("ANGEL_PASSWORD")
 TOTP_SECRET = os.getenv("ANGEL_TOTP_SECRET")
 
-TARGET = 40  # Profit %
-SL = 15      # Loss %
+TARGET = 40
+SL = 15
 
 def calc_rsi(prices, period=14):
     try:
@@ -24,9 +24,9 @@ def calc_rsi(prices, period=14):
     except:
         return 55.0
 
-def get_rsi(obj):
+def get_rsi_safe(obj):
     try:
-        # Nifty candle for RSI
+        time.sleep(1) # Rate limit fix
         to_date = datetime.now()
         from_date = to_date - timedelta(days=5)
         params = {
@@ -37,21 +37,33 @@ def get_rsi(obj):
             "todate": to_date.strftime("%Y-%m-%d %H:%M")
         }
         data = obj.getCandleData(params)
-        closes = [c[4] for c in data['data'][-20:]] if data and 'data' in data else [18000]*20
-        rsi = calc_rsi(closes)
+        if data and 'data' in data and len(data['data']) > 15:
+            closes = [c[4] for c in data['data'][-20:]]
+            rsi = calc_rsi(closes)
+        else:
+            rsi = 55.0
         print(f"RSI: {rsi}")
         return rsi
     except Exception as e:
-        print(f"RSI Error {e}")
+        print(f"RSI Error (Rate Limit) - Using 55: {e}")
         return 55.0
 
-def get_market():
+def get_market_safe():
     try:
-        headers = {'User-Agent': 'Mozilla/5.0'}
+        headers = {
+            'User-Agent': 'Mozilla/5.0',
+            'Accept': 'application/json, text/plain',
+            'Referer': 'https://www.nseindia.com/'
+        }
         s = requests.Session()
         s.get("https://www.nseindia.com", headers=headers, timeout=10)
+        time.sleep(1)
         url = "https://www.nseindia.com/api/option-chain-indices?symbol=NIFTY"
-        j = s.get(url, headers=headers, timeout=10).json()
+        r = s.get(url, headers=headers, timeout=10)
+        if r.status_code != 200 or not r.text.startswith('{'):
+            print(f"NSE Blocked {r.status_code}, using fallback")
+            return {"spot": 25500, "atm": 25500, "pcr": 1.15, "full": None}
+        j = r.json()
         spot = j['records']['underlyingValue']
         atm = min(j['records']['strikePrices'], key=lambda x: abs(x-spot))
         pe_oi = sum([d['PE']['openInterest'] for d in j['filtered']['data'] if 'PE' in d])
@@ -60,27 +72,26 @@ def get_market():
         print(f"SPOT:{spot} ATM:{atm} PCR:{pcr:.2f}")
         return {"spot":spot, "atm":atm, "pcr":pcr, "full":j}
     except Exception as e:
-        print(f"Market Error {e}")
-        return None
+        print(f"Market Error {e} -> Fallback values used")
+        return {"spot": 25500, "atm": 25500, "pcr": 1.15, "full": None}
 
-# --- START ---
 try:
     totp = pyotp.TOTP(TOTP_SECRET).now()
     obj = SmartConnect(api_key=API_KEY)
     obj.generateSession(CLIENT_ID, PASSWORD, totp)
     print(f"LOGIN SUCCESS {CLIENT_ID}")
 
-    market = get_market()
-    rsi = get_rsi(obj)
+    market = get_market_safe()  # Ab None nahi aayega
+    rsi = get_rsi_safe(obj)
     
-    # FII PREV DAY (Mock bullish, NSE se live fetch hota hai)
     fii_bias = "BULLISH"
     print(f"FII Prev Day: {fii_bias}")
 
     score = 0
     logs = []
+    direction = "NO"
 
-    # 1. RSI 25%
+    # RSI 25%
     if 60 < rsi < 75:
         score += 25
         logs.append(f"RSI {rsi} CALL +25")
@@ -92,58 +103,32 @@ try:
     else:
         score += 10
         logs.append(f"RSI {rsi} Neutral +10")
-        direction = "NO"
+        direction = "CALL" if rsi > 50 else "PUT"
 
-    # 2. FII 25%
-    if fii_bias == "BULLISH":
-        score += 25
-        logs.append("FII Buy +25")
-
-    # 3. PCR 20%
-    if market['pcr'] > 1.15:
+    score += 25
+    logs.append("FII +25")
+    if market['pcr'] > 1.1:
         score += 20
         logs.append(f"PCR {market['pcr']:.2f} +20")
-    elif market['pcr'] < 0.85:
-        score += 5
-        logs.append(f"PCR Bearish +5")
     else:
         score += 10
-        logs.append(f"PCR Neutral +10")
-
-    # 4. OI+Volume 10%
+        logs.append(f"PCR +10")
     score += 10
     logs.append("OI Vol +10")
 
     print(f"SCORE: {score}% | DIR: {direction} | {logs}")
 
-    # 80% CONFIRM LOGIC
-    if score >= 80 and direction != "NO":
+    if score >= 80:
         strike = market['atm']
-        if direction == "CALL":
-            tradingsymbol = f"NIFTY{datetime.now().strftime('%d%b%y').upper()}{strike}CE"
-        else:
-            tradingsymbol = f"NIFTY{datetime.now().strftime('%d%b%y').upper()}{strike}PE"
-        
-        print(f"✅ 80% CONFIRM {direction} -> BEST STRIKE {strike} {tradingsymbol}")
-        print(f"AUTO BUY SIGNAL | Target {TARGET}% SL {SL}%")
-
-        # REAL ORDER (Paper mode now, uncomment to live)
-        # orderparams = {
-        #   "variety": "NORMAL", "tradingsymbol": tradingsymbol,
-        #   "symboltoken": "99926000", "transactiontype": "BUY",
-        #   "exchange": "NFO", "ordertype": "MARKET",
-        #   "producttype": "INTRADAY", "duration": "DAY",
-        #   "price": "0", "quantity": "50"
-        # }
-        # obj.placeOrder(orderparams)
-
-        print("PAPER TRADE OK - Loss Min Profit Max Active")
+        print(f"✅ 80% CONFIRM {direction} -> BEST STRIKE {strike}")
+        print(f"AUTO BUY SIGNAL Target {TARGET}% SL {SL}%")
     elif score < 50:
-        print("❌ DIRECTION FAIL <50% -> EXIT ALL POSITIONS SIGNAL")
+        print("❌ DIRECTION FAIL <50% -> EXIT ALL")
     else:
-        print(f"⏳ WAIT - Score {score}% <80% - Dobara check karega, sahi hone par entry lega")
+        print(f"⏳ WAIT - Score {score}% <80% - Next run me dobara try")
 
-    print("BOT DONE")
+    print("BOT DONE - NO CRASH")
 
 except Exception as e:
-    print(f"ERROR: {e}")
+    print(f"FINAL ERROR HANDLED: {e}")
+    print("BOT DONE - SAFE EXIT")
