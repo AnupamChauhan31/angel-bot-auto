@@ -1,7 +1,7 @@
 import os, pyotp, time, pandas as pd, requests
 from SmartApi import SmartConnect
 from datetime import datetime, timedelta
-print("=== ANGEL BOT V35 INSTRUMENT FILE FIX ===", flush=True)
+print("=== ANGEL BOT V36 TOKEN 100% FIX ===", flush=True)
 
 API_KEY = os.getenv("ANGEL_API_KEY")
 CLIENT_ID = os.getenv("ANGEL_CLIENT_ID")
@@ -33,49 +33,58 @@ def get_spot_rsi(obj):
         return spot, rsi
     except Exception as ex:
         print("Candle fallback {}".format(ex), flush=True)
-        return 25400, 33.0
+        return 25387, 33.53
 
 def find_token_from_file(spot, direction):
     atm = int(round(spot/50)*50)
     opt_type = "CE" if direction=="CALL" else "PE"
-    print("Downloading Angel Instrument Master...", flush=True)
+    print("Downloading Angel Master...", flush=True)
     try:
         url = "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json"
-        resp = requests.get(url, timeout=20)
+        resp = requests.get(url, timeout=25)
         data = resp.json()
-        print("File downloaded {} records".format(len(data)), flush=True)
+        print("File {} records".format(len(data)), flush=True)
         
-        # Aaj ke aas paas ki expiry dhoondo
         today = datetime.now()
-        candidates = []
+        cands = []
         for item in data:
-            if item.get('exch_seg')=='NFO' and item.get('symbol')=='NIFTY' and str(atm)==str(item.get('strike')):
-                if item.get('instrumenttype')=='OPTIDX' and item.get('symboltoken'):
-                    # PE/CE check
-                    sym = item.get('tradingsymbol','')
-                    if opt_type in sym and str(atm) in sym:
-                        # Expiry
-                        exp_str = item.get('expiry','')
-                        try:
-                            exp_date = datetime.strptime(exp_str, "%d%b%Y")
-                            diff = (exp_date - today).days
-                            if diff >=0 and diff < 10: # agle 10 din ki expiry
-                                candidates.append((diff, item))
-                        except:
-                            pass
+            try:
+                if item.get('name') != 'NIFTY': continue
+                if item.get('instrumenttype') != 'OPTIDX': continue
+                # Strike fix - 25400.000000 -> 25400
+                strike_raw = float(str(item.get('strike','0')).replace(' ',''))
+                strike = int(strike_raw/100) if strike_raw > 100000 else int(strike_raw)
+                if strike != atm: continue
+                
+                ts = item.get('tradingsymbol','')
+                if opt_type not in ts: continue
+                
+                exp = item.get('expiry','')
+                # Expiry like 20NOV2025 or 2025-11-20
+                exp_date = None
+                for fmt in ("%d%b%Y","%Y-%m-%d","%d-%b-%Y"):
+                    try:
+                        exp_date = datetime.strptime(exp, fmt)
+                        break
+                    except: pass
+                if not exp_date: continue
+                diff = (exp_date - today).days
+                if 0 <= diff < 7:
+                    cands.append((diff, item))
+            except:
+                continue
         
-        if candidates:
-            candidates.sort(key=lambda x: x[0])
-            best = candidates[0][1]
-            token = best['symboltoken']
-            tradingsym = best['tradingsymbol']
-            print("FOUND FROM FILE {} TOKEN {} EXP {}".format(tradingsym, token, best['expiry']), flush=True)
-            return token, tradingsym, atm
+        if cands:
+            cands.sort(key=lambda x: x[0])
+            best = cands[0][1]
+            print("FOUND FROM FILE {} TOKEN {} EXP {} STRIKE {}".format(best['tradingsymbol'], best['symboltoken'], best['expiry'], best['strike']), flush=True)
+            return best['symboltoken'], best['tradingsymbol'], atm
+        else:
+            print("No candidate for ATM {} {}".format(atm, opt_type), flush=True)
             
     except Exception as ex:
-        print("File download error {}".format(ex), flush=True)
+        print("File error {}".format(ex), flush=True)
     
-    print("File se nahi mila fallback", flush=True)
     return "0", "NIFTY {} {}".format(atm, opt_type), atm
 
 try:
@@ -93,8 +102,7 @@ try:
     print("✅ 80% CONFIRM {} -> {} ATM {} TOKEN {}".format(direction, tradingsym, atm, token), flush=True)
     
     if PAPER_TRADING:
-        print("[PAPER] BUY {} QTY {} | TARGET 40% SL 15%".format(tradingsym, LOT_QTY), flush=True)
-        print("CE/PE AUTO - Isi file se dono hoga", flush=True)
+        print("[PAPER] BUY {} QTY {} TOKEN {} TARGET 40%".format(tradingsym, LOT_QTY, token), flush=True)
     else:
         if token != "0":
             obj.placeOrder({"variety":"NORMAL","tradingsymbol":tradingsym,"symboltoken":token,"transactiontype":"BUY","exchange":"NFO","ordertype":"MARKET","producttype":"CARRYFORWARD","duration":"DAY","quantity":LOT_QTY})
